@@ -1,0 +1,17 @@
+# Node.js
+node_modules/
+
+# clasp認証情報（絶対にコミットしない）
+.clasprc.json
+.clasp.json
+
+# TypeScriptコンパイル結果
+dist/
+*.js.map
+
+# OS系
+.DS_Store
+Thumbs.db
+
+# VSCode
+.vscode/

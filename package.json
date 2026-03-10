@@ -1,0 +1,14 @@
+{
+  "name": "my-gas-project",
+  "version": "1.0.0",
+  "scripts": {
+    "push": "clasp push",
+    "pull": "clasp pull",
+    "deploy": "clasp deploy",
+    "watch": "clasp push --watch"
+  },
+  "devDependencies": {
+    "@types/google-apps-script": "^1.0.0",
+    "typescript": "^5.0.0"
+  }
+}
