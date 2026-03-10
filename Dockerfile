@@ -3,8 +3,10 @@ FROM node:20-alpine
 
 WORKDIR /workspace
 
-# git を追加 ← これを追加！
 RUN apk add --no-cache git
+
+RUN git config --global user.email "tsutsumi_takanobu@lapsys.co.jp" && \
+    git config --global user.name "tsutsumitakanobu-lap"
 
 # claspとTypeScriptをグローバルインストール
 RUN npm install -g @google/clasp typescript
