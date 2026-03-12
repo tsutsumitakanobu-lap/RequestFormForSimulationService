@@ -1,6 +1,6 @@
 /**
  * Main function executed on form submission.
- * Handles data logging, folder creation, file management, AI diagnosis, and URL generation.
+ * Handles dual-path logic (Direct Formal vs Estimate-to-Formal).
  */
 function createFolderAndMoveFiles(e) {
   // --- [1. CONFIGURATION & CONSTANTS] ---
@@ -8,6 +8,7 @@ function createFolderAndMoveFiles(e) {
     PARENT_FOLDER_ID: '1ZyCfHWZw35Bpx-a8zwlgBLLfQtQBwcjmGqSc3dEvclnAYrZD8j54hTZ7JNopfunDV_IH576s',
     ADDRESS_BOOK_ID: '1MEtptfvwTvmC6YhRoQIAyU5-2VO3DvFjTtffdUTi35c',
     ADDRESS_BOOK_SHEET_NAME: 'シート1',
+    PARAM_MAP_SHEET_NAME: 'フォーム項目一覧',
     LOG_SS_ID: '1i9OesRVOtN5_fY8ntCEp_fHsMh_pefRawlaYZAZMbVo',
     LOG_SHEET_NAME: 'RequestLog',
     MITUMORI_PROMPT_FILE_ID: '1liF9c709fvFYvLGzg2_QHC8UWLpJ6OrW',
@@ -16,61 +17,53 @@ function createFolderAndMoveFiles(e) {
     ADMIN_EMAIL: PropertiesService.getScriptProperties().getProperty('ADMIN_EMAIL')
   };
 
-  // Critical Item IDs based on the provided IDTable
+  /** * CRITICAL ITEM IDs (GAS Item IDs)
+   * Note: Some items exist in both Estimate and Formal sections with different IDs.
+   */
   const IDS = {
-    FORM_TYPE: '2015761906',       // 依頼種別
-    SALES_REP: '1973732404',        // ラプラス・システム担当営業
-    PLANT_NAME: '1222779165',      // 発電所名
-    FOLDER_ID_HIDDEN: '77031512',  // フォルダID (Hidden field)
-    MITUMORI_CLIENT: '1732382986', // 見積もり依頼者氏名
-    SEISHIKI_CLIENT: '323456789'   // 依頼者氏名 (Example ID, update if needed)
+    FORM_TYPE: '2015761906',
+    SALES_REP: '1973732404',
+    FOLDER_ID_HIDDEN: '605773322',
+    
+    // Plant Name (Check both sections)
+    PLANT_NAME_M: '1618123851', 
+    PLANT_NAME_S: '700137931', 
+    
+    // Client Name (Check both sections)
+    CLIENT_M: '1200762231',
+    CLIENT_S: '1940403378', 
+    
+    // Affiliation (Check both sections)
+    COMPANY_M: '715482028',
+    COMPANY_S: '356449795'
   };
 
-  /**
-   * MAPPING: Mitumori Item ID -> Seishiki Entry ID
-   * This ensures high maintainability for pre-filling formal requests.
-   */
-  const URL_PARAM_MAP = {
-    '393957065': 'entry.393957065',   // Affiliation
-    '1732382986': 'entry.1732382986', // Client Name
-    '292916935': 'entry.292916935',   // Sales Rep
-    '1222779165': 'entry.1222779165', // Plant Name
-    '625473123': 'entry.625473123',   // Address
-    '880911839': 'entry.880911839',   // LatLon
-    '659329608': 'entry.659329608',   // Sim Type
-    '485460435': 'entry.485460435'    // Notes
-  };
 
   try {
     if (!e) return;
     const form = e.source;
-    const response = e.response;
-    const itemResponses = response.getItemResponses();
+    const itemResponses = e.response.getItemResponses();
     
-    let answersMap = {};       // Key: Item ID
-    let titleAnswersMap = {};  // Key: Question Title
+    let answersMap = {};
+    let titleAnswersMap = {};
     let filesToMove = [];
-    let fileNames = [];
 
-    // --- [2. PARSE RESPONSES & CLEAN FILE NAMES] ---
+    // --- [2. PARSE RESPONSES] ---
     itemResponses.forEach(itemRes => {
       const item = itemRes.getItem();
       const id = item.getId().toString();
       const title = item.getTitle();
       let val = itemRes.getResponse();
 
-      // Handle File Uploads: Clean names and collect IDs
       if (item.getType() === FormApp.ItemType.FILE_UPLOAD && val) {
         const fileIds = Array.isArray(val) ? val : [val];
-        let cleaned = fileIds.map(fid => {
+        val = fileIds.map(fid => {
           let file = DriveApp.getFileById(fid);
           let newName = file.getName().replace(/(.+) - [^-]+(\.[a-zA-Z0-9]+)$/, '$1$2');
           file.setName(newName);
-          fileNames.push(newName);
           filesToMove.push(fid);
           return newName;
-        });
-        val = cleaned.join('\n');
+        }).join('\n');
       }
       answersMap[id] = val;
       titleAnswersMap[title] = val;
@@ -78,32 +71,38 @@ function createFolderAndMoveFiles(e) {
 
     const isMitumori = (answersMap[IDS.FORM_TYPE] === "見積もり依頼");
 
-    // --- [3. DATA MANAGEMENT (REQ 1)] ---
-    // Log all data to spreadsheet using fixed columns based on form items
+    // --- [3. RESOLVE SHARED FIELDS (COALESCE LOGIC)] ---
+    // This logic picks whichever ID has data, supporting both direct and estimate paths.
+    const activePlantName = answersMap[IDS.PLANT_NAME_M] || answersMap[IDS.PLANT_NAME_S] || 'UnknownPlant';
+    const activeClientName = answersMap[IDS.CLIENT_M] || answersMap[IDS.CLIENT_S] || '';
+    const activeCompanyName = answersMap[IDS.COMPANY_M] || answersMap[IDS.COMPANY_S] || '';
+
+    // --- [4. DATA MANAGEMENT (Log all columns)] ---
     logToMasterDatabase(CONFIG, form, answersMap);
 
-    // --- [4. FOLDER RESOLUTION] ---
+    // --- [5. FOLDER RESOLUTION] ---
     const parentFolder = DriveApp.getFolderById(CONFIG.PARENT_FOLDER_ID);
     let targetFolder;
     const existingFolderId = answersMap[IDS.FOLDER_ID_HIDDEN];
 
+    // Reuse folder if Folder ID is passed (Formal request after estimate)
     if (!isMitumori && existingFolderId) {
       try { targetFolder = DriveApp.getFolderById(existingFolderId); } catch(err) {}
     }
+    
     if (!targetFolder) {
       const timeStr = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy-MM-dd_HHmm');
-      const folderName = `${answersMap[IDS.PLANT_NAME] || 'UnknownPlant'}_${timeStr}`;
-      targetFolder = parentFolder.createFolder(folderName);
+      targetFolder = parentFolder.createFolder(`${activePlantName}_${timeStr}`);
     }
 
-    // --- [5. GENERATE PRE-FILLED URL (REQ 2)] ---
+    // --- [6. GENERATE PRE-FILLED URL (For Estimate Path)] ---
     let prefilledUrl = "";
     if (isMitumori) {
       const baseUrl = form.getPublishedUrl().replace("viewform", "viewform?");
-      let queryParts = [`entry.1739104995=${encodeURIComponent("正式依頼")}`]; // Set to Formal
-      queryParts.push(`entry.77031512=${encodeURIComponent(targetFolder.getId())}`); // Link folder
+      let queryParts = [`entry.1739104995=${encodeURIComponent("正式依頼")}`];
+      queryParts.push(`entry.77031512=${encodeURIComponent(targetFolder.getId())}`);
 
-      // Dynamically add mapped parameters
+      const URL_PARAM_MAP = loadUrlParamMap(CONFIG);
       for (let itemId in URL_PARAM_MAP) {
         if (answersMap[itemId]) {
           queryParts.push(`${URL_PARAM_MAP[itemId]}=${encodeURIComponent(answersMap[itemId])}`);
@@ -112,34 +111,30 @@ function createFolderAndMoveFiles(e) {
       prefilledUrl = baseUrl + queryParts.join("&");
     }
 
-    // --- [6. PDF GENERATION & AI ANALYSIS] ---
-    let pdfContent = "【シミュレーション依頼 回答内容まとめ】\n\n";
+    // --- [7. PDF, AI & NOTIFICATION] ---
+    let pdfBody = "【シミュレーション依頼 回答内容まとめ】\n\n";
     for (let title in titleAnswersMap) {
       if (title === "フォルダID") continue;
       let val = titleAnswersMap[title];
-      // Keep "Sama" logic
       if (title.includes("氏名") && val && !val.endsWith("様")) val += " 様";
-      pdfContent += `■ ${title}\n${val}\n\n`;
+      pdfBody += `■ ${title}\n${val}\n\n`;
     }
 
-    const aiAnalysis = callGeminiAI(pdfContent, filesToMove, isMitumori, CONFIG);
+    const aiAnalysis = callGeminiAI(pdfBody, filesToMove, isMitumori, CONFIG);
     
     if (isMitumori) {
-      pdfContent += `\n--------------------------------------------\n【正式依頼用URL】\n${prefilledUrl}\n--------------------------------------------\n`;
+      pdfBody += `\n----------------\n【正式依頼URL】\n${prefilledUrl}\n----------------\n`;
     }
-    pdfContent += `\n【AI事前診断】\n${aiAnalysis}`;
+    pdfBody += `\n【AI事前診断】\n${aiAnalysis}`;
 
-    // Create and save PDF
-    const pdfBlob = createPDF(pdfContent, answersMap[IDS.PLANT_NAME] || 'Request', targetFolder);
-
-    // Move uploaded files to the target folder
+    const pdfBlob = createPDF(pdfBody, activePlantName, targetFolder);
     filesToMove.forEach(fid => { try { DriveApp.getFileById(fid).moveTo(targetFolder); } catch(e) {} });
 
-    // --- [7. NOTIFICATIONS] ---
-    sendNotification(CONFIG, titleAnswersMap, targetFolder.getUrl(), aiAnalysis, pdfBlob, isMitumori, prefilledUrl);
+    // Use unified "Active" variables for notification
+    sendNotification(CONFIG, titleAnswersMap, targetFolder.getUrl(), aiAnalysis, pdfBlob, isMitumori, prefilledUrl, activeCompanyName, activeClientName);
 
   } catch (err) {
-    console.error("Critical Error: " + err.stack);
+    console.error(err.stack);
     GmailApp.sendEmail(CONFIG.ADMIN_EMAIL, "GAS Error Alert", err.stack);
   }
 }
@@ -290,9 +285,46 @@ function sendNotification(config, titleMap, folderUrl, aiText, pdfBlob, isMitumo
               + `<a href="${preUrl}">[正式依頼用フォームを開く]</a>`;
   }
 
-  GmailApp.sendEmail(targetEmail, subject, "", { 
-    htmlBody: htmlBody, 
-    attachments: [pdfBlob], 
-    name: '自動通知システム' 
+  GmailApp.sendEmail(targetEmail, subject, "", {
+    htmlBody: htmlBody,
+    attachments: [pdfBlob],
+    name: '自動通知システム'
   });
+}
+
+/**
+ * Loads URL pre-fill parameter map from Spreadsheet, with Script Properties cache.
+ * Cache key: 'URL_PARAM_MAP_CACHE'
+ * To invalidate: run clearUrlParamMapCache()
+ */
+function loadUrlParamMap(config) {
+  const props = PropertiesService.getScriptProperties();
+  const cached = props.getProperty('URL_PARAM_MAP_CACHE');
+  if (cached) return JSON.parse(cached);
+
+  const sheet = SpreadsheetApp.openById(config.ADDRESS_BOOK_ID)
+    .getSheetByName(config.PARAM_MAP_SHEET_NAME);
+  if (!sheet) throw new Error(`シート "${config.PARAM_MAP_SHEET_NAME}" が見つかりません`);
+
+  const data = sheet.getDataRange().getValues();
+  const map = {};
+  for (let i = 1; i < data.length; i++) { // Skip header row
+    const entryId      = data[i][3]; // Column D: entry.ID (URL用)
+    const srcGasItemId = data[i][4]; // Column E: 事前入力用対応Item ID
+    if (srcGasItemId && srcGasItemId !== '—' && entryId && entryId !== '—') {
+      map[srcGasItemId.toString()] = entryId;
+    }
+  }
+
+  props.setProperty('URL_PARAM_MAP_CACHE', JSON.stringify(map));
+  return map;
+}
+
+/**
+ * Clears the URL_PARAM_MAP cache stored in Script Properties.
+ * Run this manually after editing the mapping sheet.
+ */
+function clearUrlParamMapCache() {
+  PropertiesService.getScriptProperties().deleteProperty('URL_PARAM_MAP_CACHE');
+  console.log('URL_PARAM_MAP_CACHE を削除しました。次回実行時にSpreadsheetから再読み込みします。');
 }

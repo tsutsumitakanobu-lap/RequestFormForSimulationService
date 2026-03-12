@@ -1,0 +1,7 @@
+services:
+  app:
+    build: .
+    volumes:
+      - .:/workspace
+      - ./.clasprc.json:/root/.clasprc.json
+    tty: true
